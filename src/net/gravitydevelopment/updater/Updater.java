@@ -34,7 +34,7 @@ import org.json.simple.JSONValue;
  * If you are unsure about these rules, please read the plugin submission guidelines: http://goo.gl/8iU5l
  *
  * @author Gravity
- * @version 2.0
+ * @version 2.1
  */
 
 public class Updater {
@@ -46,6 +46,9 @@ public class Updater {
     private String versionType;
     private String versionGameVersion;
 
+    private String remoteName;
+    private String remoteVersion;
+
     private boolean announce; // Whether to announce file downloads
 
     private URL url; // Connecting to RSS
@@ -54,6 +57,10 @@ public class Updater {
 
     private int id = -1; // Project's Curse ID
     private String apiKey = null; // BukkitDev ServerMods API key
+    private String userAgent = "Updater (by Gravity)"; // User-Agent used during connect to BukkitDev
+    private String updaterFolderName = "Updater"; // Updater folder name
+    private String updaterConfigFileName = "config.yml"; // Updater config file name
+
     private static final String TITLE_VALUE = "name"; // Gets remote file's title
     private static final String LINK_VALUE = "downloadUrl"; // Gets remote file's download link
     private static final String TYPE_VALUE = "releaseType"; // Gets remote file's release type
@@ -145,8 +152,8 @@ public class Updater {
         this.updateFolder = plugin.getServer().getUpdateFolder();
 
         final File pluginFile = plugin.getDataFolder().getParentFile();
-        final File updaterFile = new File(pluginFile, "Updater");
-        final File updaterConfigFile = new File(updaterFile, "config.yml");
+        final File updaterFile = new File(pluginFile, this.updateFolderName);
+        final File updaterConfigFile = new File(updaterFile, this.updaterConfigFileName);
 
         if (!updaterFile.exists()) {
             updaterFile.mkdir();
@@ -242,6 +249,22 @@ public class Updater {
     }
 
     /**
+     * Get the latest remote name
+     */
+    public String getRemoteName() {
+        this.waitForThread();
+        return this.remoteName;
+    }
+
+    /**
+     * Get the latest remote version
+     */
+    public String getRemoteVersion() {
+        this.waitForThread();
+        return this.remoteVersion;
+    }
+
+    /**
      * As the result of Updater output depends on the thread's completion, it is necessary to wait for the thread to finish
      * before allowing anyone to check the result.
      */
@@ -259,9 +282,32 @@ public class Updater {
      * Save an update from dev.bukkit.org into the server's update folder.
      */
     private void saveFile(File folder, String file, String u) {
-        if (!folder.exists()) {
+        //cleanup update working directory before downloading the file
+        if (folder.exists()) {
+            try {
+                File[] currList;
+                Stack<File> stack = new Stack<File>();
+                stack.push(folder);
+                while (! stack.isEmpty()) {
+                    if (stack.lastElement().isDirectory()) {
+                        currList = stack.lastElement().listFiles();
+                        if (currList.length > 0) {
+                            for (File curr: currList) {
+                                stack.push(curr);
+                            }
+                        } else {
+                            stack.pop().delete();
+                        }
+                    } else {
+                        stack.pop().delete();
+                    }
+                }
+            } catch (SecurityException e) {
+            }
+        } else {
             folder.mkdir();
         }
+
         BufferedInputStream in = null;
         FileOutputStream fout = null;
         try {
@@ -269,13 +315,15 @@ public class Updater {
             final URL url = new URL(u);
             final int fileLength = url.openConnection().getContentLength();
             in = new BufferedInputStream(url.openStream());
-            fout = new FileOutputStream(folder.getAbsolutePath() + "/" + file);
+            fout = new FileOutputStream(folder.getAbsolutePath() + File.separator + file);
 
             final byte[] data = new byte[Updater.BYTE_SIZE];
             int count;
+
             if (this.announce) {
                 this.plugin.getLogger().info("About to download a new update: " + this.versionName);
             }
+
             long downloaded = 0;
             while ((count = in.read(data, 0, Updater.BYTE_SIZE)) != -1) {
                 downloaded += count;
@@ -285,18 +333,14 @@ public class Updater {
                     this.plugin.getLogger().info("Downloading update: " + percent + "% of " + fileLength + " bytes.");
                 }
             }
-            //Just a quick check to make sure we didn't leave any files from last time...
-            for (final File xFile : new File(this.plugin.getDataFolder().getParent(), this.updateFolder).listFiles()) {
-                if (xFile.getName().endsWith(".zip")) {
-                    xFile.delete();
-                }
-            }
+
             // Check to see if it's a zip file, if it is, unzip it.
-            final File dFile = new File(folder.getAbsolutePath() + "/" + file);
+            final File dFile = new File(folder.getAbsolutePath() + File.separator + file);
             if (dFile.getName().endsWith(".zip")) {
                 // Unzip
                 this.unzip(dFile.getCanonicalPath());
             }
+
             if (this.announce) {
                 this.plugin.getLogger().info("Finished updating.");
             }
@@ -323,7 +367,8 @@ public class Updater {
         try {
             final File fSourceZip = new File(file);
             final String zipPath = file.substring(0, file.length() - 4);
-            ZipFile zipFile = new ZipFile(fSourceZip);
+            ZipFile zipFile = new ZipFile(fSourceZip, ZipFile.OPEN_READ);
+
             Enumeration<? extends ZipEntry> e = zipFile.entries();
             while (e.hasMoreElements()) {
                 ZipEntry entry = e.nextElement();
@@ -345,7 +390,7 @@ public class Updater {
                     bis.close();
                     final String name = destinationFilePath.getName();
                     if (name.endsWith(".jar") && this.pluginFile(name)) {
-                        destinationFilePath.renameTo(new File(this.plugin.getDataFolder().getParent(), this.updateFolder + "/" + name));
+                        destinationFilePath.renameTo(new File(this.plugin.getDataFolder().getParent(), this.updateFolder + File.separator + name));
                     }
                 }
                 entry = null;
@@ -361,11 +406,9 @@ public class Updater {
                     if (this.pluginFile(dFile.getName())) {
                         final File oFile = new File(this.plugin.getDataFolder().getParent(), dFile.getName()); // Get current dir
                         final File[] contents = oFile.listFiles(); // List of existing files in the current dir
-                        for (final File cFile : dFile.listFiles()) // Loop through all the files in the new dir
-                        {
+                        for (final File cFile : dFile.listFiles()) { // Loop through all the files in the new dir
                             boolean found = false;
-                            for (final File xFile : contents) // Loop through contents to see if it exists
-                            {
+                            for (final File xFile : contents) { // Loop through contents to see if it exists
                                 if (xFile.getName().equals(cFile.getName())) {
                                     found = true;
                                     break;
@@ -373,7 +416,7 @@ public class Updater {
                             }
                             if (!found) {
                                 // Move the new file into the current dir
-                                cFile.renameTo(new File(oFile.getCanonicalFile() + "/" + cFile.getName()));
+                                cFile.renameTo(new File(oFile.getCanonicalFile() + File.separator + cFile.getName()));
                             } else {
                                 // This file already exists, so we don't need it anymore.
                                 cFile.delete();
@@ -412,7 +455,9 @@ public class Updater {
         if (this.type != UpdateType.NO_VERSION_CHECK) {
             final String version = this.plugin.getDescription().getVersion();
             if (title.split(" v").length == 2) {
-                final String remoteVersion = title.split(" v")[1].split(" ")[0]; // Get the newest file's version number
+                String[] titleParts = title.split(" v");
+                this.remoteVersion = titleParts[1].split(" ")[0]; // Get the newest file's version number
+                this.remoteName = titleParts[0];
 
                 if (this.hasTag(version) || version.equalsIgnoreCase(remoteVersion)) {
                     // We already have the latest version, or this build is tagged for no-update
@@ -452,7 +497,7 @@ public class Updater {
             if (this.apiKey != null) {
                 conn.addRequestProperty("X-API-Key", this.apiKey);
             }
-            conn.addRequestProperty("User-Agent", "Updater (by Gravity)");
+            conn.addRequestProperty("User-Agent", this.userAgent);
 
             conn.setDoOutput(true);
 
@@ -475,7 +520,7 @@ public class Updater {
             return true;
         } catch (final IOException e) {
             if (e.getMessage().contains("HTTP response code: 403")) {
-                this.plugin.getLogger().warning("dev.bukkit.org rejected the API key provided in plugins/Updater/config.yml");
+                this.plugin.getLogger().warning("dev.bukkit.org rejected the API key provided in plugins/" + this.updaterFolderName + "/" + this.updaterConfigFileName);
                 this.plugin.getLogger().warning("Please double-check your configuration to ensure it is correct.");
                 this.result = UpdateResult.FAIL_APIKEY;
             } else {
@@ -492,24 +537,103 @@ public class Updater {
 
         @Override
         public void run() {
-            if (Updater.this.url != null) {
+            try {
+                if (Updater.this.url == null)
+                    throw new UpdaterUrlNotNullException("Url is null. Please check previous errors");
+
+                if (!Updater.this.read())
+                    throw new UpdaterReadProcessErrorException("An error occured during read process. Please check previous errors");
+
                 // Obtain the results of the project's file feed
-                if (Updater.this.read()) {
-                    if (Updater.this.versionCheck(Updater.this.versionName)) {
-                        if ((Updater.this.versionLink != null) && (Updater.this.type != UpdateType.NO_DOWNLOAD)) {
-                            String name = Updater.this.file.getName();
-                            // If it's a zip file, it shouldn't be downloaded as the plugin's name
-                            if (Updater.this.versionLink.endsWith(".zip")) {
-                                final String[] split = Updater.this.versionLink.split("/");
-                                name = split[split.length - 1];
-                            }
-                            Updater.this.saveFile(new File(Updater.this.plugin.getDataFolder().getParent(), Updater.this.updateFolder), name, Updater.this.versionLink);
-                        } else {
-                            Updater.this.result = UpdateResult.UPDATE_AVAILABLE;
-                        }
-                    }
+                if (!Updater.this.versionCheck(Updater.this.versionName))
+                    throw new UpdaterInvalidVersionException("An error occured during the version check process. Please check version format");
+
+                if (Updater.this.type.equals(UpdateType.NO_DOWNLOAD)) {
+                    Updater.this.result = UpdateResult.UPDATE_AVAILABLE;
+                    return;
                 }
+
+                if (Updater.this.versionLink == null)
+                    throw new UpdaterVersionLinkNotNullException("versionLink is null. Please check previous errors.");
+
+                String name = Updater.this.file.getName();
+                // If it's a zip file, it shouldn't be downloaded as the plugin's name
+                if (Updater.this.versionLink.endsWith(".zip")) {
+                    final String[] split = Updater.this.versionLink.split("/");
+                    name = split[split.length - 1];
+                }
+                Updater.this.saveFile(new File(Updater.this.plugin.getDataFolder().getParent(), Updater.this.updateFolder + File.separator + Updater.this.remoteName), name, Updater.this.versionLink);
+            } catch (UpdaterUrlNotNullException e) {
+                this.plugin.getLogger().severe(e.getMessage());
+            } catch (UpdaterReadProcessErrorException e) {
+                this.plugin.getLogger().severe(e.getMessage());
+            } catch (UpdaterInvalidVersionException e) {
+                this.plugin.getLogger().severe(e.getMessage());
+            } catch (UpdaterVersionLinkNotNullException e) {
+                this.plugin.getLogger().severe(e.getMessage());
             }
+        }
+
+    }
+
+    public abstract class UpdaterException extends RuntimeException {
+        protected UpdaterException() {
+        }
+
+        protected UpdaterException(String msg) {
+            super(msg);
+        }
+    }
+
+    private class UpdaterUrlNotNullException extends UpdaterException {
+        private String message;
+
+        public UpdaterUrlNotNullException(String message) {
+            this.message = message;
+        }
+
+        @Override
+        public String getMessage() {
+            return this.message;
+        }
+    }
+
+    private class UpdaterReadProcessErrorException extends UpdaterException {
+        private String message;
+
+        public UpdaterReadProcessErrorException(String message) {
+            this.message = message;
+        }
+
+        @Override
+        public String getMessage() {
+            return this.message;
+        }
+    }
+
+    private class UpdaterInvalidVersionException extends UpdaterException {
+        private String message;
+
+        public UpdaterInvalidVersionException(String message) {
+            this.message = message;
+        }
+
+        @Override
+        public String getMessage() {
+            return this.message;
+        }
+    }
+
+    private class UpdaterVersionLinkNotNullException extends UpdaterException {
+        private String message;
+
+        public UpdaterVersionLinkNotNullException(String message) {
+            this.message = message;
+        }
+
+        @Override
+        public String getMessage() {
+            return this.message;
         }
     }
 }
